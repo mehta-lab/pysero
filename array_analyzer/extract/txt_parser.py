@@ -1,12 +1,15 @@
 # bchhun, {2020-03-22}
-
-import numpy as np
 import csv
+import natsort
+import numpy as np
+import os
 import xmltodict
 from xml.parsers.expat import ExpatError
 import xml.etree.ElementTree as ET
 import pandas as pd
 import math
+
+import array_analyzer.extract.constants as constants
 
 """
 functions like "create_<extension>_dict" parse files of <extension> and return:
@@ -130,13 +133,13 @@ def create_csv_dict(path_):
     return fiduc, None, csv_antigens, array_params
 
 
-def create_xlsx_dict(path_):
+def create_xlsx_dict(xlsx):
     """
     extracts fiducial, antigen, and array parameter metadata from .xlsx sheets
     then populates dictionaries or lists with appropriate information
     The output dictionaries and lists conform the .xml-style parsing.  This is for consistency
 
-    :param path_: path to .xlsx file
+    :param dict xlsx: Opened xlsx sheets
     :return list fiduc: Fiducials and control info
     :return list spots: None.  spots IDs not needed for .xlsx
     :return list repl: Replicate (antigen)
@@ -146,11 +149,16 @@ def create_xlsx_dict(path_):
     xlsx_antigens = list()
     array_params = dict()
 
-    xlsx = pd.read_excel(path_, sheet_name=None)
-
     # populate array parameters
     for idx, value in enumerate(xlsx['imaging_and_array_parameters']['Parameter']):
         array_params[value] = xlsx['imaging_and_array_parameters']['Value'][idx]
+
+    # Unless specified, run analysis with fiducials only
+    # Otherwise run with all non-negative spots
+    fiducials_only = True
+    if 'fiducials_only' in array_params:
+        if array_params['fiducials_only'] != 1:
+            fiducials_only = False
 
     # populate fiduc list
     for col in xlsx['antigen_type'].keys()[1:]:
@@ -158,13 +166,19 @@ def create_xlsx_dict(path_):
             if type(value) is float:
                 if math.isnan(value):
                     continue
-            elif "Fiducial" in value or "xkappa-biotin" in value or "Fiducial, Diagnostic" in value:
-                pos = {'@row': row,
-                       '@col': col,
-                       '@spot_type': "Fiducial"}
-                fiduc.append(pos)
+            else:
+                if not fiducials_only and "Negative" not in value:
+                    pos = {'@row': row,
+                           '@col': col,
+                           '@spot_type': "Fiducial"}
+                    fiduc.append(pos)
+                elif "Fiducial" in value or "xkappa-biotin" in value or "Fiducial, Diagnostic" in value:
+                    pos = {'@row': row,
+                           '@col': col,
+                           '@spot_type': "Fiducial"}
+                    fiduc.append(pos)
 
-    # find and populate fiduc list, antigen list
+    # find and populate antigen list
     for col in xlsx['antigen_array'].keys()[1:]:
         for row, value in enumerate(xlsx['antigen_array'][col]):
             if type(value) is float:
@@ -176,7 +190,7 @@ def create_xlsx_dict(path_):
                        '@antigen': str(value)}
                 xlsx_antigens.append(pos)
 
-    return fiduc, None, xlsx_antigens, array_params
+    return fiduc, xlsx_antigens, array_params
 
 
 def create_xlsx_array(path_):
@@ -338,3 +352,31 @@ def populate_array_antigen(arr, csv_antigens_):
         arr[r, c] = v
 
     return arr
+
+
+def rerun_xl_od(well_names, well_xlsx_path, rerun_names, xlsx_writer):
+    """
+    Load stats_per_well excel file and copy over existing well sheets
+    before rerunning some of the wells.
+
+    :param list well_names: Well names (e.g. ['B12', 'C2'])
+    :param str well_xlsx_path: Full path to well stats xlsx sheet
+    :param list rerun_names: Names of wells to be rerun
+    :param pd.ExcelWriter xlsx_writer: Pandas excel writer
+    """
+    rerun_set = set(rerun_names)
+    assert rerun_set.issubset(well_names), \
+        "All rerun wells can't be found in input directory"
+    assert os.path.isfile(well_xlsx_path),\
+        "Can't find stats_per_well excel: {}".format(well_xlsx_path)
+    ordered_dict = pd.read_excel(well_xlsx_path, sheet_name=None)
+    written_wells = list(ordered_dict.keys())
+    written_wells.remove('antigens')
+    # Find the difference between the sets
+    existing_wells = natsort.natsorted(
+        list(set(written_wells) - rerun_set),
+    )
+    # Write existing wells to well stats
+    for well_name in existing_wells:
+        well_df = pd.DataFrame(ordered_dict[well_name])
+        well_df.to_excel(xlsx_writer, sheet_name=well_name)

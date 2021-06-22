@@ -1,13 +1,10 @@
-from copy import copy
-
 import cv2 as cv
 import numpy as np
 
-from scipy.signal import find_peaks
-from scipy.ndimage.filters import gaussian_filter1d
+from skimage.measure import label
 from skimage import util as u
 from skimage.morphology import disk, ball, binary_opening, binary_erosion
-from skimage.filters import threshold_otsu, threshold_multiotsu, threshold_minimum
+from skimage.filters import threshold_otsu, threshold_minimum
 from scipy.ndimage import binary_fill_holes
 from skimage.segmentation import clear_border
 
@@ -95,116 +92,26 @@ def create_otsu_mask(input_image, scale=1):
         thr = threshold_otsu(input_image, nbins=512)
     return input_image > (scale * thr)
 
-
-def create_multiotsu_mask(input_image, n_class, fg_class, str_elem_size=3):
-    """Create a binary mask using morphological operations
-
-    Opening removes small objects in the foreground.
-
-    :param np.array input_image: generate masks from this image
-    :param int str_elem_size: size of the structuring element. typically 3, 5
-    :return: mask of input_image, np.array
-    """
-    if np.min(input_image) == np.max(input_image):
-        return np.ones(input_image.shape)
-    else:
-        thr = threshold_multiotsu(input_image, classes=n_class, nbins=512)
-        im_label = np.digitize(input_image, bins=thr)
-        mask = im_label == fg_class
-
-    if len(input_image.shape) == 2:
-        str_elem = disk(str_elem_size)
-    else:
-        str_elem = ball(str_elem_size)
-    # remove small objects in mask
-    mask = binary_opening(mask, str_elem)
-    return mask
-
-
-def find_profile_peaks(profile, margin, prominence):
-    # invert because black spots
-    profile = profile.max() - profile
-    max_pos = int(np.where(profile == profile.max())[0][0])
-    # Make sure max is not due to leaving the center
-    add_margin = 0
-    half_margin = int(margin / 2)
-    if max_pos > len(profile) - half_margin:
-        profile = profile[:-half_margin]
-    elif max_pos < half_margin:
-        profile = profile[half_margin:]
-        add_margin = half_margin
-    profile = gaussian_filter1d(profile, 3)
-    min_prom = profile.max() * prominence
-    peaks, _ = find_peaks(profile, prominence=min_prom, distance=50)
-    if len(peaks) >= 4:
-        spot_dists = peaks[1:] - peaks[:-1]
-    else:
-        spot_dists = None
-    mean_pos = peaks[0] + (peaks[-1] - peaks[0]) / 2 + add_margin
-    return mean_pos, spot_dists
-
-
-def grid_estimation(im,
-                    spot_coords,
-                    margin=50,
-                    prominence=.15):
-    """
-    Based on images intensities and detected spots, make an estimation
-    of grid location so that ICP algorithm is initialized close enough for convergence.
-    TODO: This assumes that you always detect the first peaks
-    this may be unstable so think of other ways to initialize...
-    :param np.array im: Grayscale image
-    :param np.array spot_coords: Spot x,y coordinates (nbr spots x 2)
-    :param int margin: Margin for cropping outside all detected spots
-    :param float prominence: Fraction of max intensity to filter out insignificant peaks
-    :return tuple start_point: Min x, y coordinates for initial grid estimate
-    :return float spot_dist: Estimated distance between spots
-    """
-    im_shape = im.shape
-    x_min = int(max(margin, np.min(spot_coords[:, 0]) - margin))
-    x_max = int(min(im_shape[1] - margin, np.max(spot_coords[:, 0]) + margin))
-    y_min = int(max(margin, np.min(spot_coords[:, 1]) - margin))
-    y_max = int(min(im_shape[0] - margin, np.max(spot_coords[:, 1]) + margin))
-    im_roi = im[y_min:y_max, x_min:x_max]
-    # Create intensity profiles along x and y and find peaks
-    profile_x = np.mean(im_roi, axis=0)
-    mean_x, dists_x = find_profile_peaks(profile_x, margin, prominence)
-    profile_y = np.mean(im_roi, axis=1)
-    mean_y, dists_y = find_profile_peaks(profile_y, margin, prominence)
-
-    mean_point = (x_min + mean_x, y_min + mean_y)
-    spot_dist = np.hstack([dists_x, dists_y])
-    # Remove invalid distances
-    spot_dist = spot_dist[np.where(spot_dist != None)]
-    if spot_dist.size == 0:
-        # Failed at estimating spot dist. Return default or error out?
-        spot_dist = None
-    else:
-        spot_dist = np.median(spot_dist)
-
-    return mean_point, spot_dist
-
-
-def crop_image_from_coords(im, grid_coords, margin=200):
+def crop_image_from_coords(im, coords, margin=200):
     """
     Given image coordinates, crop image around them with a margin.
 
     :param np.array im: 2D image
-    :param np.array grid_coords: Fitted grid coordinates which should be contained
+    :param np.array coords: Grid coordinates which should be contained
         in the cropped image (nbr points x 2)
     :param int margin: How much margin around the coordinates
     :return np.array im_roi: Cropped image
-    :return np.array grid_coords: Grid coordinates with new origin (rows, cols)
+    :return np.array crop_coords: Grid coordinates with new origin (rows, cols)
     """
     im_shape = im.shape
-    row_min = int(max(0, np.min(grid_coords[:, 0]) - margin))
-    row_max = int(min(im_shape[0], np.max(grid_coords[:, 0]) + margin))
-    col_min = int(max(0, np.min(grid_coords[:, 1]) - margin))
-    col_max = int(min(im_shape[1], np.max(grid_coords[:, 1]) + margin))
+    row_min = int(max(0, np.min(coords[:, 0]) - margin))
+    row_max = int(min(im_shape[0], np.max(coords[:, 0]) + margin))
+    col_min = int(max(0, np.min(coords[:, 1]) - margin))
+    col_max = int(min(im_shape[1], np.max(coords[:, 1]) + margin))
     im_crop = im[row_min:row_max, col_min:col_max]
 
     # Update coordinates with new origin
-    crop_coords = grid_coords.copy()
+    crop_coords = coords.copy()
     crop_coords[:, 0] = crop_coords[:, 0] - row_min + 1
     crop_coords[:, 1] = crop_coords[:, 1] - col_min + 1
     return im_crop, crop_coords
@@ -212,21 +119,22 @@ def crop_image_from_coords(im, grid_coords, margin=200):
 
 def crop_image_at_center(im, center, height, width):
     """
-    crop the supplied image to include only the well and its spots
+    Crop the supplied image to include only the well and its spots
 
     :param im: image
-    :param float center_: Center (row, col) of the crop box
+    :param float center: Center (row, col) of the crop box
     :param float height: height of the crop box
     :param float width: width of the crop box
     :return np.array crop: Cropped image
+    :return list bbox: Bounding box coordinates [row min, col min, row max, col max]
     """
-    cy, cx = center
+    c_row, c_col = center
     im_h, im_w = im.shape
     # truncate the bounding box when it exceeds image size
-    bbox = np.rint([max(cy - height / 2, 0),
-                   max(cx - width / 2, 0),
-                   min(cy + height / 2, im_h),
-                   min(cx + width / 2, im_w)]).astype(np.int32)
+    bbox = np.rint([max(c_row - height / 2, 0),
+                   max(c_col - width / 2, 0),
+                   min(c_row + height / 2, im_h),
+                   min(c_col + width / 2, im_w)]).astype(np.int32)
     crop = im[bbox[0]:bbox[2], bbox[1]:bbox[3]]
     return crop, bbox
 
@@ -252,28 +160,47 @@ def crop_image(arr, cx_, cy_, radius_, border_=200):
     return crop
 
 
-def thresh_and_binarize(image_, method='rosin', invert=True, min_size=10, thr_percent=95):
+def get_largest_component(spot_segm):
+    """
+    Remove everything but the largest connected component from segmented image.
+
+    :param np.array spot_segm: Binary segmented 2D image
+    :return np.array largest_component: Largest connected component in image
+    """
+    labels = label(spot_segm)
+    largest_component = labels.copy()
+    if labels.max() > 0:
+        largest_component = labels == np.argmax(np.bincount(labels.flat)[1:]) + 1
+    return largest_component.astype(labels.dtype)
+
+
+def thresh_and_binarize(image,
+                        method='rosin',
+                        invert=True,
+                        disk_size=10,
+                        thr_percent=95,
+                        get_lcc=False):
     """
     receives greyscale np.ndarray image
         inverts the intensities
         thresholds on the minimum peak
         converts the image into binary about that threshold
 
-    :param image_: np.ndarray
-    :param method: str
-        'bimodal' or 'unimodal'
+    :param np.ndarray image: 2D grayscale image
+    :param str method: Trheshold type: 'bimodal', 'otsu', 'rosin' or 'bright_spots'
+    :param bool invert: Invert image if spots are dark
+    :param int disk_size: Structuring element disk size
+    :param int thr_percent: Thresholding percentile
+    :param bool get_lcc: Returns only the largest connected component
     :return: spots threshold_min on this image
     """
-
+    image_ = image.copy()
     if invert:
         image_ = u.invert(image_)
 
     if method == 'bimodal':
         thresh = threshold_minimum(image_, nbins=512)
-
-        spots = copy(image_)
-        spots[image_ < thresh] = 0
-        spots[image_ >= thresh] = 1
+        spots = (image_ > thresh).astype(np.uint8)
 
     elif method == 'otsu':
         spots = create_otsu_mask(image_, scale=1)
@@ -283,13 +210,16 @@ def thresh_and_binarize(image_, method='rosin', invert=True, min_size=10, thr_pe
 
     elif method == 'bright_spots':
         spots = image_ > np.percentile(image_, thr_percent)
-        str_elem = disk(min_size)
-        # spots = binary_closing(spots, str_elem)
+        str_elem = disk(disk_size)
         spots = binary_opening(spots, str_elem)
+        spots = binary_fill_holes(spots, str_elem)
         spots = clear_border(spots)
 
     else:
         raise ModuleNotFoundError("not a supported method for thresh_and_binarize")
+
+    if get_lcc:
+        spots = get_largest_component(spots)
 
     return spots
 
@@ -381,7 +311,8 @@ class SpotDetector:
                         margin=0,
                         im_mean=100,
                         im_std=25,
-                        max_intensity=255):
+                        max_intensity=255,
+                        ):
         """
         Use OpenCVs simple blob detector (thresholdings and grouping by properties)
         to detect all dark spots in the image. First filter with a Laplacian of

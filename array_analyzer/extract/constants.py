@@ -9,8 +9,9 @@ ANALYZE_OD = None
 INPUT_FOLDER = None
 OUTPUT_FOLDER = None
 WORKFLOW = None
-METADATA_EXTENSION = None
+METADATA_FILE = None
 DEBUG = None
+LOAD_REPORT = None
 
 # === constants parsed from metadata ===
 #   the constants below are all dictionaries
@@ -26,11 +27,31 @@ params = {
     'min_diam': None,
     'pixel_size_scienion': 0.0049,
     'pixel_size_octopi': 0.00185,
-    'pixel_size': None
+    'pixel_size': None,
+    'nbr_outliers': 1
 }
 
 # a map between Image Name : well (row, col)
 IMAGE_TO_WELL = dict()
+# If there's a sheet in xlsx call 'rerun_wells', only those well names will be run
+RERUN = False
+RERUN_WELLS = []
+
+# Column names for dataframe that holds all spot properties
+SPOT_DF_COLS = ['grid_row',
+                'grid_col',
+                'centroid_row',
+                'centroid_col',
+                'intensity_mean',
+                'intensity_median',
+                'bg_mean',
+                'bg_median',
+                'od_norm',
+                'bbox_row_min',
+                'bbox_row_max',
+                'bbox_col_min',
+                'bbox_col_max'
+                ]
 
 # === array-constants ===
 #   the constants below are all np.ndarrays whose elements are "U100" strings
@@ -57,10 +78,22 @@ FIDUCIALS_IDX = []
 SPOT_DIST_PIX = int()
 SPOT_DIST_UM = int()
 STDS = [100, 100, 2, .01]  # x, y, angle, scale
-REG_DIST_THRESH = 500
+NBR_PARTICLES = 4000
+REG_DIST_THRESH = 100
+MEAN_POINT = (0, 0)
+SCALE_MEAN = 1.
+ANGLE_MEAN = 0.
+
+# Requirement of minimum number of detected spots
+MIN_NBR_SPOTS = 5
+# Minimum detected spot percentage of spot ROI area
+SPOT_MIN_PERCENT_AREA = .1
 
 # constants for saving
 RUN_PATH = ''
+
+# Logger
+LOG_NAME = 'pysero.log'
 
 # template for writing OD, INT, BG worksheets
 WELL_OUTPUT_TEMPLATE = {'A': {1: None, 2: None, 3: None, 4: None, 5: None, 6: None,
